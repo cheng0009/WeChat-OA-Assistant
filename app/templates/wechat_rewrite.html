@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}微信改写 - 公众号GZH运营助手2.0{% endblock %}
+{% block content %}
+<h2>微信改写</h2>
+<p class="text-muted">管理微信搜狗来源的文章，改写为评论版本</p>
+
+{% if not current_channel %}
+<div class="alert alert-info">请在顶部选择一个频道后使用此功能</div>
+{% else %}
+<!-- 微信搜狗源列表 -->
+<div class="card p-3 mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">微信搜狗源</h5>
+        <div>
+            <a href="/channels/{{ current_channel.id }}/edit" class="btn btn-outline-secondary btn-sm me-2">+ 在频道中添加</a>
+            <form action="/wechat-rewrite/fetch?c={{ current_channel.id }}" method="post" style="display:inline">
+                <button type="submit" class="btn btn-accent btn-sm">抓取最新文章</button>
+            </form>
+        </div>
+    </div>
+    {% if ws_sources %}
+    <table class="table table-sm table-hover mb-0">
+        <thead>
+            <tr>
+                <th>名称</th>
+                <th>关键词</th>
+                <th>公众号</th>
+                <th>状态</th>
+                <th>上次抓取</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for src in ws_sources %}
+            {% set cfg = src.config|from_json %}
+            <tr>
+                <td>{{ src.name }}</td>
+                <td><small>{{ cfg.get('keywords', [])|join(', ') or '-' }}</small></td>
+                <td><small>{{ cfg.get('wechat_accounts', [])|join(', ') or '-' }}</small></td>
+                <td>
+                    {% if src.enabled %}
+                    <span class="badge badge-published">启用</span>
+                    {% else %}
+                    <span class="badge badge-draft">禁用</span>
+                    {% endif %}
+                </td>
+                <td><small class="text-muted">{{ src.last_fetch_at.strftime('%Y-%m-%d %H:%M') if src.last_fetch_at else '从未' }}</small></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted mb-0">暂无微信搜狗源，<a href="/channels/{{ current_channel.id }}/edit">去频道中添加</a></p>
+    {% endif %}
+</div>
+
+<!-- 待改写文章 -->
+<div class="card p-3 mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">待改写文章({{ pending|length }})</h5>
+        {% if pending %}
+        <form action="/wechat-rewrite/batch-rewrite?c={{ current_channel.id }}" method="post" style="display:inline">
+            <button type="submit" class="btn btn-accent btn-sm" onclick="return confirm('确认批量改写全部 {{ pending|length }} 篇文章？')">全部改写</button>
+        </form>
+        {% endif %}
+    </div>
+    {% if pending %}
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>标题</th>
+                    <th>来源公众号</th>
+                    <th>摘要</th>
+                    <th>抓取时间</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in pending %}
+                <tr>
+                    <td><a href="{{ item.url }}" target="_blank" style="text-decoration:none;font-weight:500;">{{ item.title[:50] }}{% if item.title|length > 50 %}...{% endif %}</a></td>
+                    <td><span class="badge bg-secondary">{{ item.source }}</span></td>
+                    <td><small class="text-muted">{{ item.summary[:80] }}{% if item.summary|length > 80 %}...{% endif %}</small></td>
+                    <td><small class="text-muted">{{ item.created_at.strftime('%m-%d %H:%M') if item.created_at else '-' }}</small></td>
+                    <td>
+                        <form action="/wechat-rewrite/{{ item.id }}/rewrite?c={{ current_channel.id }}" method="post" style="display:inline">
+                            <button type="submit" class="btn btn-outline-secondary btn-sm" onclick="this.innerHTML='改写中...';this.disabled=true;this.form.submit()">改写</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-muted mb-0">没有待改写的文章。先添加微信搜狗源并抓取</p>
+    {% endif %}
+</div>
+
+<!-- 已改写文章 -->
+<div class="card p-3">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">已改写文章({{ rewritten|length }})</h5>
+    </div>
+    {% if rewritten %}
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>原文标题</th>
+                    <th>来源</th>
+                    <th>改写状态</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in rewritten %}
+                <tr>
+                    <td><a href="{{ item.url }}" target="_blank" style="text-decoration:none;">{{ item.title[:50] }}{% if item.title|length > 50 %}...{% endif %}</a></td>
+                    <td><span class="badge bg-secondary">{{ item.source }}</span></td>
+                    <td><span class="badge badge-published">已改写</span></td>
+                    <td>
+                        <a href="/articles/{{ item.article_id }}?c={{ current_channel.id }}" class="btn btn-outline-secondary btn-sm">查看文章</a>
+                        <form action="/wechat-rewrite/{{ item.id }}/rewrite?c={{ current_channel.id }}" method="post" style="display:inline">
+                            <button type="submit" class="btn btn-outline-secondary btn-sm" onclick="this.innerHTML='改写中...';this.disabled=true;this.form.submit()">重新改写</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-muted mb-0">还没有改写的文章</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

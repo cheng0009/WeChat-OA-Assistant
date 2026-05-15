@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 - 公众号GZH运营助手2.0{% endblock %}
+{% block content %}
+<div class="row mb-4">
+    <div class="col-12">
+        <h2>仪表盘</h2>
+        <p class="text-muted">AI HOT 日报自动抓取与公众号文章生成系统</p>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ stats.total_articles }}</div>
+            <div class="stat-label">总文章数</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ stats.published }}</div>
+            <div class="stat-label">已发布</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ stats.drafts }}</div>
+            <div class="stat-label">草稿</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card" style="cursor:pointer;" onclick="location.href='/wechat-rewrite{% if current_channel %}?c={{ current_channel.id }}{% endif %}'">
+            <div class="stat-number">{{ stats.pending_rewrite }}</div>
+            <div class="stat-label">待改写文章</div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card p-3">
+            <h5 class="card-title">系统状态</h5>
+            <hr class="text-secondary">
+            <table class="table table-dark table-borderless">
+                <tr><td>频道</td><td>{{ stats.channel_name }}</td></tr>
+                <tr><td>定时任务</td><td>{{ "已启用" if stats.schedule_enabled else "未启用" }}</td></tr>
+                <tr><td>执行时间</td><td>每日 {{ stats.schedule_hour }}:{{ '%02d' % stats.schedule_minute }}</td></tr>
+                <tr><td>数据源数量</td><td>{{ stats.source_count }} 个</td></tr>
+                <tr><td>生成模型</td><td>{{ stats.model or "未配置" }}</td></tr>
+            </table>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card p-3">
+            <h5 class="card-title">快捷操作</h5>
+            <hr class="text-secondary">
+            <form id="manual-run-form" action="/manual-run{% if current_channel %}?c={{ current_channel.id }}{% endif %}" method="post" class="d-inline">
+                <button type="button" class="btn btn-accent mb-2 w-100 manual-run-btn" id="manual-run-btn">立即抓取并生成</button>
+            </form>
+            <form action="/trigger-generate{% if current_channel %}?c={{ current_channel.id }}{% endif %}" method="post" class="d-inline">
+                <button type="submit" class="btn btn-outline-secondary mb-2 w-100">仅生成文章（用上次数据）</button>
+            </form>
+            <a href="/articles{% if current_channel %}?c={{ current_channel.id }}{% endif %}" class="btn btn-outline-secondary w-100">查看所有文章</a>
+            {% if stats.pending_rewrite > 0 %}
+            <a href="/wechat-rewrite{% if current_channel %}?c={{ current_channel.id }}{% endif %}" class="btn btn-outline-secondary w-100 mt-2">改写待处理文章 ({{ stats.pending_rewrite }})</a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div class="card p-3">
+    <h5 class="card-title">最近文章</h5>
+    <hr class="text-secondary">
+    {% if recent_articles %}
+    <div class="list-group list-group-flush bg-transparent">
+        {% for article in recent_articles %}
+        <a href="/articles/{{ article.id }}{% if current_channel %}?c={{ current_channel.id }}{% endif %}" class="list-group-item list-group-item-action bg-transparent text-light border-secondary">
+            <div class="d-flex w-100 justify-content-between">
+                <strong>{{ article.title }}</strong>
+                <small class="text-muted">{{ article.created_at.strftime('%Y-%m-%d') }}</small>
+            </div>
+            <small class="text-muted">
+                {% if article.status == "draft" %}
+                <span class="badge badge-draft">草稿</span>
+                {% else %}
+                <span class="badge badge-published">已发布</span>
+                {% endif %}
+                {{ article.summary[:80] }}{% if article.summary|length > 80 %}...{% endif %}
+            </small>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-muted mb-0">还没有生成文章。点击上方按钮开始第一次抓取。</p>
+    {% endif %}
+</div>
+
+<script>
+var manualBtn = document.getElementById('manual-run-btn');
+if (manualBtn) {
+    manualBtn.addEventListener('click', async function() {
+        this.classList.remove('btn-accent');
+        this.classList.add('btn-warning');
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>正在抓取文章并生成...';
+        var url = document.getElementById('manual-run-form').action;
+        try {
+            var resp = await fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            var data = await resp.json();
+            if (data.ok) {
+                window.location.href = '/articles' + (data.channel_id ? '?c=' + data.channel_id : '');
+            } else {
+                alert('抓取失败：' + (data.error || '未知错误'));
+                this.classList.remove('btn-warning');
+                this.classList.add('btn-accent');
+                this.disabled = false;
+                this.innerHTML = '立即抓取并生成';
+            }
+        } catch(e) {
+            alert('请求异常：' + e.message);
+            this.classList.remove('btn-warning');
+            this.classList.add('btn-accent');
+            this.disabled = false;
+            this.innerHTML = '立即抓取并生成';
+        }
+    });
+}
+document.querySelectorAll('form[action="/trigger-generate"]').forEach(f => {
+    f.addEventListener('submit', function() {
+        this.querySelector('button').disabled = true;
+        this.querySelector('button').textContent = '生成中...';
+    });
+});
+</script>
+{% endblock %}

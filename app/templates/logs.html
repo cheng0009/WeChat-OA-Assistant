@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}运行日志 - 公众号GZH运营助手2.0{% endblock %}
+{% block content %}
+<h2>运行日志</h2>
+<p class="text-muted">每日自动抓取和生成任务的执行记录</p>
+
+<div class="card p-3">
+    {% if logs %}
+    <table class="table table-dark table-hover">
+        <thead>
+            <tr>
+                <th>日期</th>
+                <th>状态</th>
+                <th>抓取数量</th>
+                <th>消息</th>
+                <th>时间</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in logs %}
+            <tr>
+                <td>{{ log.date }}</td>
+                <td>
+                    {% if log.status == "success" %}
+                    <span class="badge badge-published">成功</span>
+                    {% elif log.status == "warning" %}
+                    <span class="badge badge-draft">警告</span>
+                    {% else %}
+                    <span class="badge bg-danger">错误</span>
+                    {% endif %}
+                </td>
+                <td>{{ log.fetch_count }}</td>
+                <td><small>{{ log.message[:80] }}{% if log.message|length > 80 %}...{% endif %}</small></td>
+                <td><small class="text-muted">{{ log.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</small></td>
+                <td>
+                    {% if log.article_id %}
+                    <a href="/articles/{{ log.article_id }}{% if current_channel %}?c={{ current_channel.id }}{% endif %}" class="btn btn-sm btn-accent">查看文章</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted mb-0">暂无运行记录</p>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}执行日志 - 公众号GZH运营助手2.0{% endblock %}
+{% block content %}
+<h2>抓取并生�?�?{{ current_channel.name }}</h2>
+<hr class="text-secondary">
+
+<div id="status-bar" class="alert alert-info mb-3">
+    <span class="spinner-border spinner-border-sm me-2"></span>正在执行，请稍�?..
+</div>
+
+<pre id="log-area" style="background:#1a1a2e;color:#0f0;padding:16px;border-radius:8px;max-height:60vh;overflow-y:auto;font-size:13px;white-space:pre-wrap;">
+</pre>
+
+<div id="done-actions" class="mt-3" style="display:none;">
+    <a href="/articles{% if current_channel %}?c={{ current_channel.id }}{% endif %}" class="btn btn-accent">查看文章</a>
+    <a href="/{% if current_channel %}?c={{ current_channel.id }}{% endif %}" class="btn btn-outline-secondary ms-2">返回首页</a>
+</div>
+
+<script>
+(function() {
+    var logEl = document.getElementById('log-area');
+    var statusEl = document.getElementById('status-bar');
+    var actionsEl = document.getElementById('done-actions');
+    var received = false;
+
+    var evtSource = new EventSource('/run-log-stream?c={{ current_channel.id or "" }}');
+
+    // Timeout: if no data after 8s, show a hint
+    var timer = setTimeout(function() {
+        if (!received) {
+            logEl.textContent = '正在等待服务器响�?..\n(如长时间无反应，请检查控制台日志)';
+        }
+    }, 8000);
+
+    evtSource.addEventListener('done', function(e) {
+        clearTimeout(timer);
+        var status = e.data;
+        if (status === 'done') {
+            statusEl.className = 'alert alert-success mb-3';
+            statusEl.innerHTML = '执行完成�?;
+        } else {
+            statusEl.className = 'alert alert-danger mb-3';
+            statusEl.innerHTML = '执行出错，请查看下方日志';
+        }
+        actionsEl.style.display = 'block';
+        evtSource.close();
+    });
+
+    evtSource.onmessage = function(e) {
+        clearTimeout(timer);
+        received = true;
+        logEl.textContent += e.data;
+        logEl.scrollTop = logEl.scrollHeight;
+    };
+
+    evtSource.onerror = function() {
+        if (actionsEl.style.display === 'none') {
+            logEl.textContent += '\n[连接中断，请刷新页面]';
+        }
+        evtSource.close();
+    };
+})();
+</script>
+{% endblock %}

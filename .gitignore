@@ -1,0 +1,35 @@
+venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.db
+data/images/
+data/wechat/
+exported_images/
+.DS_Store
+
+# Build artifacts
+dist/
+build/
+
+# License & security (never commit)
+_secret.py
+SECURITY_KEY.dat
+*.dat
+
+# Debug logs
+*.log
+
+# OS
+Thumbs.db
+
+# Data - temporary / generated
+data/*.backup
+data/*.bak.*
+data/wechat_debug/
+data/wechat_cookies*.json
+data/wechat_state*.json
+data/test_upload/
+data/channel_uploads/
+data/app.db
