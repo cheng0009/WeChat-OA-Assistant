@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}公众号运营助手2.0{% endblock %}</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/bootstrap.min.css" rel="stylesheet">
     <style>
         body {
             background: #f5f5f5;
@@ -85,6 +85,7 @@
                     <li class="nav-item"><a class="nav-link {% if request.url.path == '/' %}active{% endif %}" href="/{% if current_channel %}?c={{ current_channel.id }}{% endif %}">仪表盘</a></li>
                     <li class="nav-item"><a class="nav-link {% if request.url.path == '/articles' %}active{% endif %}" href="/articles{% if current_channel %}?c={{ current_channel.id }}{% endif %}">文章管理</a></li>
                     <li class="nav-item"><a class="nav-link {% if request.url.path == '/channels' %}active{% endif %}" href="/channels">频道管理</a></li>
+                    <li class="nav-item"><a class="nav-link {% if request.url.path.startswith('/writing-skills') %}active{% endif %}" href="/writing-skills">写作技能</a></li>
                 </ul>
             </div>
         </div>
@@ -108,53 +109,15 @@
         <small>Powered by 公众号：70后教你做自媒体</small>
     </div>
 
-    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="scheduler-toast-container" style="z-index: 9999;"></div>
-
-    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/bootstrap.bundle.min.js"></script>
     <script>
     document.getElementById('channel-switcher')?.addEventListener('click', function(e) {
         var link = e.target.closest('[data-channel-id]');
         if (!link) return;
         e.preventDefault();
         var newId = link.getAttribute('data-channel-id');
-        var path = window.location.pathname;
-        var params = new URLSearchParams(window.location.search);
-        params.set('c', newId);
-        var m = path.match(/^\/channels\/(\d+)\//);
-        if (m) {
-            path = path.replace(/^\/channels\/(\d+)\//, '/channels/' + newId + '/');
-        } else if (path.match(/^\/articles\/\d+/)) {
-            path = '/articles';
-        }
-        window.location.href = path + '?' + params.toString();
+        window.location.href = '/?c=' + newId;
     });
-
-    function showSchedulerToast(channelName) {
-        var now = new Date();
-        var timeStr = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0') + ':' + now.getSeconds().toString().padStart(2,'0');
-        var container = document.getElementById('scheduler-toast-container');
-        var toastEl = document.createElement('div');
-        toastEl.className = 'toast';
-        toastEl.setAttribute('role', 'alert');
-        toastEl.innerHTML =
-            '<div class="toast-header bg-info text-white">' +
-                '<strong class="me-auto">定时任务</strong>' +
-                '<small>' + timeStr + '</small>' +
-                '<button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>' +
-            '</div>' +
-            '<div class="toast-body">频道「' + channelName + '」开始执行自动抓取与写作...</div>';
-        container.appendChild(toastEl);
-        var bsToast = new bootstrap.Toast(toastEl, { autohide: false });
-        bsToast.show();
-    }
-
-    var evtSource = new EventSource('/scheduler-events');
-    evtSource.onmessage = function(e) {
-        var data = JSON.parse(e.data);
-        if (data.type === 'job_started') {
-            showSchedulerToast(data.channel_name);
-        }
-    };
     </script>
 </body>
 </html>

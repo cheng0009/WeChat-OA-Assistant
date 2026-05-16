@@ -1,3 +1,4 @@
+import asyncio
 from PIL import Image, ImageDraw, ImageFont
 from dataclasses import dataclass, field
 from typing import Optional
@@ -332,7 +333,7 @@ def _draw_footer(draw, font, qr_img, y0, target_img, style: ImageStyle):
         target_img.paste(qr_resized, (WIDTH - MARGIN - qr_size, qr_y), mask)
 
 
-async def generate_wechat_images(article_title, viral_title, body, date_str, style_name: str = DEFAULT_STYLE, avatar_path: str | None = None, qrcode_path: str | None = None, date_prefix: str | None = None):
+def _render_wechat_images(viral_title, body, date_str, style_name, avatar_path, qrcode_path, date_prefix):
     set_channel_images(avatar_path, qrcode_path)
     style = STYLES.get(style_name) or STYLES[DEFAULT_STYLE]
 
@@ -392,3 +393,7 @@ async def generate_wechat_images(article_title, viral_title, body, date_str, sty
             _json.dump(meta, f)
 
     return files
+
+
+async def generate_wechat_images(article_title, viral_title, body, date_str, style_name: str = DEFAULT_STYLE, avatar_path: str | None = None, qrcode_path: str | None = None, date_prefix: str | None = None):
+    return await asyncio.to_thread(_render_wechat_images, viral_title, body, date_str, style_name, avatar_path, qrcode_path, date_prefix)

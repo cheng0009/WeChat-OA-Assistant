@@ -11,43 +11,26 @@ from app.fetcher import fetch_from_all_sources
 from app.generator import DeepSeekGenerator
 from app.image_gen import generate_cover_image
 from app.wechat_image_gen import generate_wechat_images, DEFAULT_STYLE
+from app.writing_skills import WritingSkillDef, skill_def_from_orm
 
 CHANNEL_MAX_ARTICLES = 12
 
 _cron_task: asyncio.Task | None = None
-_last_fire_time: dict[int, datetime.datetime] = {}  # channel_id -> last fire datetime
+_last_fire_date: dict[int, str] = {}  # channel_id -> YYYY-MM-DD of last fire
 _running_channels: set[int] = set()  # channels currently being processed
-
-# SSE event broadcast
-_event_queues: list[asyncio.Queue] = []
-
-
-def subscribe() -> asyncio.Queue:
-    q: asyncio.Queue = asyncio.Queue()
-    _event_queues.append(q)
-    return q
-
-
-def unsubscribe(q: asyncio.Queue):
-    try:
-        _event_queues.remove(q)
-    except ValueError:
-        pass
-
-
-async def _broadcast(event: dict):
-    for q in _event_queues:
-        await q.put(event)
-
 
 async def daily_job_for_channel(channel_id: int, channel_name: str = ""):
     """Run daily job for a specific channel: fetch -> generate -> images."""
     _running_channels.add(channel_id)
     print(f"[Scheduler] Starting daily job for channel {channel_id} at {datetime.datetime.now()}")
-    await _broadcast({"type": "job_started", "channel_id": channel_id, "channel_name": channel_name})
     try:
         async with async_session() as session:
-            result = await session.execute(select(Channel).where(Channel.id == channel_id))
+            from sqlalchemy.orm import selectinload
+            result = await session.execute(
+                select(Channel)
+                .options(selectinload(Channel.writing_skill))
+                .where(Channel.id == channel_id)
+            )
             channel = result.scalar_one_or_none()
             if not channel:
                 print(f"[Scheduler] Channel {channel_id} not found")
@@ -130,10 +113,33 @@ async def daily_job_for_channel(channel_id: int, channel_name: str = ""):
             folder_date = datetime.datetime.now().strftime("%Y-%m-%d")
             news_data = {"items": all_items, "daily": None, "date": date_str}
 
-            if channel.writer_prompt:
-                generator.SYSTEM_PROMPT_FULL = channel.writer_prompt
+            # Resolve writing skill
+            skill_def = None
+            if channel.writing_skill_id and channel.writing_skill:
+                skill_def = skill_def_from_orm(channel.writing_skill)
+            elif channel.writer_prompt:
+                first_line = channel.writer_prompt.strip().split("\n")[0]
+                persona = "老成"
+                if "「" in first_line and "」" in first_line:
+                    persona = first_line.split("「")[1].split("」")[0]
+                skill_def = WritingSkillDef(
+                    id=0, name="", description="", persona=persona,
+                    system_prompt=channel.writer_prompt,
+                    sticker_prompt=channel.sticker_prompt or "",
+                )
 
-            article_data = await generator.generate_article(news_data)
+            # Default to preset skill if nothing configured
+            if not skill_def:
+                from app.models import WritingSkill
+                result2 = await session.execute(
+                    select(WritingSkill).where(WritingSkill.is_preset == True)
+                    .order_by(WritingSkill.id).limit(1)
+                )
+                preset = result2.scalar_one_or_none()
+                if preset:
+                    skill_def = skill_def_from_orm(preset)
+
+            article_data = await generator.generate_article(news_data, skill=skill_def)
 
             if article_data:
                 content_long = article_data.get("content", "")
@@ -143,7 +149,7 @@ async def daily_job_for_channel(channel_id: int, channel_name: str = ""):
 
                 content_html = _md_to_html(content_long, viral_title or title)
 
-                sticker_text = await generator.generate_sticker(content_long)
+                sticker_text = await generator.generate_sticker(content_long, skill=skill_def)
                 import re as _re
                 sticker_text = _re.sub(r"\n{3,}", "\n\n", sticker_text.strip())
 
@@ -170,6 +176,7 @@ async def daily_job_for_channel(channel_id: int, channel_name: str = ""):
                     source_date=date_str,
                     status="draft",
                     is_daily=True,
+                    enhanced=article_data.get("enhanced", False),
                 )
                 session.add(article)
                 await session.flush()
@@ -317,9 +324,11 @@ async def _cron_loop():
 
             for ch in channels:
                 scheduled = now.replace(hour=ch.schedule_hour, minute=ch.schedule_minute, second=0, microsecond=0)
-                last = _last_fire_time.get(ch.id)
-                if now >= scheduled and (last is None or last < scheduled):
-                    _last_fire_time[ch.id] = now
+                window_start = scheduled - datetime.timedelta(minutes=5)
+                window_end = scheduled + datetime.timedelta(minutes=30)  # 5min 前到 30min 后，小宕机可补发
+                today = now.strftime("%Y-%m-%d")
+                if window_start <= now <= window_end and _last_fire_date.get(ch.id) != today:
+                    _last_fire_date[ch.id] = today
                     print(f"[Scheduler] Firing daily job for '{ch.name}' at {now}")
                     asyncio.create_task(daily_job_for_channel(ch.id, ch.name))
 
@@ -336,7 +345,7 @@ def scheduler_status() -> dict:
     """Return current scheduler state for diagnostics."""
     return {
         "alive": _cron_task is not None and not _cron_task.done(),
-        "last_run": {str(k): v.isoformat() for k, v in _last_fire_time.items()},
+        "last_run": {str(k): v for k, v in _last_fire_date.items()},
         "running": list(_running_channels),
     }
 

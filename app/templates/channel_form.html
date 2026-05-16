@@ -48,15 +48,33 @@
                 <hr>
                 <h5>写作风格设定</h5>
                 <div class="mb-3">
-                    <label class="form-label">写作 Prompt</label>
-                    <textarea name="writer_prompt" class="form-control" rows="10" style="font-family: monospace; font-size: 13px;">{{ channel.writer_prompt if channel else default_prompt }}</textarea>
+                    <label class="form-label">选择写作技能</label>
+                    <select name="writing_skill_id" class="form-select" id="skill-select">
+                        <option value="0">-- 不使用预设技能（使用下方自定义 Prompt）--</option>
+                        {% for sk in all_skills %}
+                        <option value="{{ sk.id }}"
+                            data-system-prompt="{{ sk.system_prompt|e }}"
+                            data-sticker-prompt="{{ sk.sticker_prompt|e }}"
+                            {{ 'selected' if channel and channel.writing_skill_id == sk.id else '' }}>
+                            {{ sk.name }}{% if sk.is_preset %} (预设){% endif %} — {{ sk.description or '' }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <div class="form-text">
+                        选择预设或自定义技能后，下方的两个 prompt 会自动填充。你也可以在此基础上修改。
+                        <a href="/writing-skills" class="text-decoration-none">管理写作技能 →</a>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">写作 Prompt <span class="text-muted small">（技能选定后可自定义覆盖）</span></label>
+                    <textarea name="writer_prompt" id="writer-prompt" class="form-control" rows="10" style="font-family: monospace; font-size: 13px;">{{ channel.writer_prompt if channel else default_prompt }}</textarea>
                     <div class="form-text">
                         留空则使用默认「老成」风格。编辑 prompt 时第一行请用「你正在以「称呼」的身份...」格式
                     </div>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">贴图 Prompt</label>
-                    <textarea name="sticker_prompt" class="form-control" rows="6" style="font-family: monospace; font-size: 13px;">{{ channel.sticker_prompt if channel else '' }}</textarea>
+                    <label class="form-label">贴图 Prompt <span class="text-muted small">（技能选定后可自定义覆盖）</span></label>
+                    <textarea name="sticker_prompt" id="sticker-prompt" class="form-control" rows="6" style="font-family: monospace; font-size: 13px;">{{ channel.sticker_prompt if channel else '' }}</textarea>
                     <div class="form-text">留空使用默认贴图浓缩 prompt</div>
                 </div>
 
@@ -99,6 +117,39 @@
                                 <span class="badge bg-secondary">{{ src.source_type }}</span>
                                 <span class="text-muted small">ID: {{ sid }}</span>
                             </div>
+                            {% if src.source_type == 'wechat_sogou' %}
+                            {% set kw_list = src_cfg.get('keywords', []) %}
+                            {% set acc_list = src_cfg.get('wechat_accounts', []) %}
+                            <div class="row g-2">
+                                <div class="col-md-3">
+                                    <input type="text" name="source_name_{{ sid }}" class="form-control form-control-sm" value="{{ src.name }}" placeholder="来源名称">
+                                </div>
+                                <div class="col-md-9">
+                                    <div class="row g-1">
+                                        <div class="col-md-6">
+                                            <label class="small text-muted">关键词 <span class="text-danger">*</span></label>
+                                            <textarea name="ws_keywords_{{ sid }}" class="form-control form-control-sm" rows="3" placeholder="每行一个关键词">{% for kw in kw_list %}{{ kw }}{% if not loop.last %}
+{% endif %}{% endfor %}</textarea>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label class="small text-muted">公众号</label>
+                                            <textarea name="ws_accounts_{{ sid }}" class="form-control form-control-sm" rows="3" placeholder="每行一个公众号名">{% for acc in acc_list %}{{ acc }}{% if not loop.last %}
+{% endif %}{% endfor %}</textarea>
+                                        </div>
+                                    </div>
+                                    <div class="row g-1 mt-1">
+                                        <div class="col-md-3">
+                                            <label class="small text-muted">最多获取</label>
+                                            <input type="number" name="ws_max_items_{{ sid }}" class="form-control form-control-sm" value="{{ src_cfg.get('max_items', 20) }}" min="1" max="100">
+                                        </div>
+                                        <div class="col-md-9">
+                                            <label class="small text-muted">代理（可选）</label>
+                                            <input type="text" name="ws_proxy_{{ sid }}" class="form-control form-control-sm" value="{{ src_cfg.get('proxy', '') }}" placeholder="http://127.0.0.1:7890">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% else %}
                             <div class="row g-2">
                                 <div class="col-md-3">
                                     <input type="text" name="source_name_{{ sid }}" class="form-control form-control-sm" value="{{ src.name }}" placeholder="来源名称">
@@ -107,6 +158,7 @@
                                     <textarea name="source_config_{{ sid }}" class="form-control form-control-sm font-monospace" rows="1" placeholder="{}">{{ src.config }}</textarea>
                                 </div>
                             </div>
+                            {% endif %}
                         </div>
                     </div>
                     {% endfor %}
@@ -266,6 +318,22 @@
     }
     sel.addEventListener('change', toggle);
     toggle();
+})();
+
+// Writing skill selector: auto-fill prompts
+(function() {
+    var sel = document.getElementById('skill-select');
+    var wp = document.getElementById('writer-prompt');
+    var sp = document.getElementById('sticker-prompt');
+    if (!sel || !wp || !sp) return;
+    sel.addEventListener('change', function() {
+        var opt = sel.options[sel.selectedIndex];
+        if (!opt || !opt.value || opt.value === '0') return;
+        var sys = opt.getAttribute('data-system-prompt');
+        var sti = opt.getAttribute('data-sticker-prompt');
+        if (sys) wp.value = sys;
+        if (sti) sp.value = sti;
+    });
 })();
 </script>
 {% endblock %}

@@ -1,3 +1,4 @@
+import asyncio
 from PIL import Image, ImageDraw, ImageFont
 import os, random
 from datetime import datetime
@@ -67,7 +68,7 @@ def _draw_centered_text(draw, lines, font, color, center_x, y_start, line_gap):
         y += line_gap
 
 
-async def generate_cover_image(title: str, date_str: str = "", source_name: str = "AI HOT") -> str:
+def _render_cover(title: str, date_str: str, source_name: str) -> str:
     scheme = random.choice(COLOR_SCHEMES)
     layout = random.choice(LAYOUTS)
 
@@ -89,6 +90,10 @@ async def generate_cover_image(title: str, date_str: str = "", source_name: str 
     filepath = os.path.join(str(IMAGES_DIR), filename)
     img.save(filepath, "PNG")
     return f"/data/images/{filename}"
+
+
+async def generate_cover_image(title: str, date_str: str = "", source_name: str = "AI HOT") -> str:
+    return await asyncio.to_thread(_render_cover, title, date_str, source_name)
 
 
 # ── Layout: gradient (modern gradient + centered title) ──────

@@ -1,5 +1,6 @@
 """WechatSogou source plugin - fetches articles from Sogou WeChat search."""
 import re
+import random
 from datetime import datetime
 import httpx
 from .base import BaseSource, normalize_item
@@ -77,33 +78,44 @@ class WechatSogouSource(BaseSource):
         results = []
         seen_urls = set()
 
-        # Search by keywords
-        for kw in self.keywords:
-            if len(results) >= self.max_items:
-                break
-            try:
-                articles = await self._search_by_keyword(kw)
-                for art in articles:
-                    if len(results) >= self.max_items:
-                        break
-                    url = art.get("url", "")
-                    if url in seen_urls:
-                        continue
-                    seen_urls.add(url)
-                    full_content = await self._fetch_article_content(url)
-                    results.append(normalize_item({
-                        "title": art.get("title", ""),
-                        "url": url,
-                        "source": art.get("account", ""),
-                        "summary": art.get("summary", ""),
-                        "content": full_content,
-                        "category": "wechat",
-                        "publishedAt": art.get("publishedAt", ""),
-                    }, default_source=art.get("account", "") or "微信搜狗"))
-            except Exception as e:
-                print(f"[WechatSogou] Keyword '{kw}' search error: {e}")
+        # ── Keywords with fair quota distribution ──────────────
+        keywords = list(self.keywords)
+        random.shuffle(keywords)  # different order each run for diversity
 
-        # Fetch by specific accounts (using wechatsogou library)
+        num_kw = len(keywords)
+        if num_kw > 0:
+            per_keyword = max(1, self.max_items // num_kw)
+            extra = self.max_items - per_keyword * num_kw
+
+            for i, kw in enumerate(keywords):
+                if len(results) >= self.max_items:
+                    break
+                budget = per_keyword + (1 if i < extra else 0)
+                try:
+                    articles = await self._search_by_keyword(kw)
+                    kw_count = 0
+                    for art in articles:
+                        if len(results) >= self.max_items or kw_count >= budget:
+                            break
+                        url = art.get("url", "")
+                        if url in seen_urls:
+                            continue
+                        seen_urls.add(url)
+                        full_content = await self._fetch_article_content(url)
+                        results.append(normalize_item({
+                            "title": art.get("title", ""),
+                            "url": url,
+                            "source": art.get("account", ""),
+                            "summary": art.get("summary", ""),
+                            "content": full_content,
+                            "category": "wechat",
+                            "publishedAt": art.get("publishedAt", ""),
+                        }, default_source=art.get("account", "") or "微信搜狗"))
+                        kw_count += 1
+                except Exception as e:
+                    print(f"[WechatSogou] Keyword '{kw}' search error: {e}")
+
+        # ── Specific accounts (wechatsogou library) ────────────
         for acc in self.wechat_accounts:
             if len(results) >= self.max_items:
                 break

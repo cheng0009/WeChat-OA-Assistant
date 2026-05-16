@@ -33,6 +33,9 @@
                 {% elif article.wechat_draft_url and not article.auto_publish_note %}
                 <span class="badge bg-success ms-2">已自动发布</span>
                 {% endif %}
+                {% if article.enhanced %}
+                <span class="badge bg-success ms-2" title="已执行质量增强：风格检查 + 禁区过滤 + 信息审核">质量增强 ✓</span>
+                {% endif %}
             </div>
         </div>
 

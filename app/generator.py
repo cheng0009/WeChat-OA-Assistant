@@ -2,6 +2,7 @@ import httpx
 import re
 from typing import Optional
 from app.config import settings
+from app.writing_skills import WritingSkillDef
 
 
 SYSTEM_PROMPT_FULL = """你正在以「老成」的身份写一篇公众号长文，发布到微信公众平台。
@@ -73,7 +74,7 @@ class DeepSeekGenerator:
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
 
-    async def generate_article(self, news_data: dict) -> Optional[dict]:
+    async def generate_article(self, news_data: dict, skill: Optional[WritingSkillDef] = None) -> Optional[dict]:
         items = news_data.get("items", [])
         daily = news_data.get("daily")
 
@@ -81,6 +82,9 @@ class DeepSeekGenerator:
             return None
 
         news_text = self._format_news_for_prompt(items, daily)
+
+        persona = skill.persona if skill else "老成"
+        system_prompt = skill.system_prompt if skill else SYSTEM_PROMPT_FULL
 
         user_prompt = f"""素材如下（精选 2-3 条最火、最贴近普通人的来写，要引用原文出处和摘录）：
 
@@ -90,25 +94,71 @@ class DeepSeekGenerator:
 - 第一行：完整文章标题（# 开头，54-64 字，爆款风格）
 - 第二行：短标题（## 短标题：开头，20 字以内，用于封面图）
 - 全文 1800-2000 字
-- 口语化，像老成在跟读者聊天
+- 口语化，像{persona}在跟读者聊天
 - 每条新闻要适当引用原文摘录"""
 
-        raw = await self._call_api(SYSTEM_PROMPT_FULL, user_prompt, max_tokens=8192)
+        raw = await self._call_api(system_prompt, user_prompt, max_tokens=8192)
         if not raw:
             return None
 
         title, body, viral_title = self._parse_article(raw)
         summary = (body.replace("\n", "")[:120] + "…") if len(body) > 120 else body
-        return {
+
+        article = {
             "title": title,
             "viral_title": viral_title or title,
             "summary": summary,
             "content": body,
         }
 
-    async def generate_sticker(self, long_article: str) -> str:
+        # Step 2: Quality enhancement (if skill provides style guide or checklist)
+        enhanced = False
+        if skill and (skill.style_guide or skill.quality_checklist):
+            enhanced_raw = await self._enhance_article(raw, skill)
+            if enhanced_raw:
+                enh_title, enh_body, enh_viral = self._parse_article(enhanced_raw)
+                if enh_title and enh_body:
+                    article["title"] = enh_title
+                    article["viral_title"] = enh_viral or enh_title
+                    article["content"] = enh_body
+                    article["summary"] = (enh_body.replace("\n", "")[:120] + "…") if len(enh_body) > 120 else enh_body
+                    enhanced = True
+
+        article["enhanced"] = enhanced
+        return article
+
+    async def _enhance_article(self, raw_draft: str, skill: WritingSkillDef) -> Optional[str]:
+        """Post-generation quality pass using the skill's style guide and checklist."""
+        style_section = f"""## 风格指南
+{skill.style_guide}
+""" if skill.style_guide else ""
+
+        checklist_section = f"""## 质量检查清单（务必逐项检查修正）
+{skill.quality_checklist}
+""" if skill.quality_checklist else ""
+
+        system_prompt = f"""你是一个文章质量编辑。请严格按照以下标准对文章进行精修，修正所有不符合要求的地方。
+
+{style_section}{checklist_section}
+## 修改规则
+- **保持原标题和短标题完全不变**
+- 修正所有不符合风格的表述
+- 替换禁区词汇
+- 只输出精修后的完整文章，不要额外解释"""
+
+        user_prompt = f"""请精修以下文章（保持标题和短标题不变）：
+
+{raw_draft}"""
+
+        raw = await self._call_api(system_prompt, user_prompt, max_tokens=8192, temperature=0.5)
+        return raw
+
+    async def generate_sticker(self, long_article: str, skill: Optional[WritingSkillDef] = None) -> str:
         """Condense long article (~2000 chars) to sticker version (max 1000 chars)."""
-        user_prompt = f"""将以下老成的公众号长文浓缩为 800-1000 字的贴图版短文：
+        persona = skill.persona if skill else "老成"
+        sticker_prompt = skill.sticker_prompt if skill else STICKER_SYSTEM_PROMPT
+
+        user_prompt = f"""将以下{persona}的公众号长文浓缩为 800-1000 字的贴图版短文：
 
 {long_article[:3000]}
 
@@ -117,7 +167,7 @@ class DeepSeekGenerator:
 - 保留核心观点和金句
 - 去掉原文出处引用
 - 保持口语化和态度"""
-        raw = await self._call_api(STICKER_SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=0.7)
+        raw = await self._call_api(sticker_prompt, user_prompt, max_tokens=4096, temperature=0.7)
         if not raw:
             return long_article[:1000].rsplit("\n", 1)[0]
         result = raw.strip()

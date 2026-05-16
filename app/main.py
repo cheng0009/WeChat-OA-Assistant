@@ -6,15 +6,16 @@ from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse, Stre
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc, or_
+from sqlalchemy import select, func, desc, or_, text
 from pathlib import Path
 
 from app.database import init_db, get_db
-from app.models import Article, NewsItem, DailyLog, Source, Channel
+from app.models import Article, NewsItem, DailyLog, Source, Channel, WritingSkill
 from app.config import settings, BASE_DIR, ARTICLES_DIR, IMAGES_DIR, WECHAT_IMAGES_DIR, CHANNEL_UPLOADS_DIR
 from app.scheduler import start_scheduler, stop_scheduler, daily_job
 from app.fetcher import test_source
 from app.generator import DeepSeekGenerator, SYSTEM_PROMPT_FULL
+from app.writing_skills import WritingSkillDef
 from app.image_gen import generate_cover_image
 from app.sources import list_source_types, get_source_class
 from app.wechat_image_gen import generate_wechat_images, STYLES
@@ -65,6 +66,54 @@ async def resolve_channel(db: AsyncSession, channel_id: int | None = None) -> Ch
     return result.scalar_one_or_none()
 
 
+async def resolve_channel_skill(db: AsyncSession, channel: Channel | None) -> WritingSkillDef | None:
+    """Resolve the effective writing skill for a channel.
+    Priority: channel skill > channel writer_prompt > default preset skill.
+    """
+    from sqlalchemy.orm import selectinload
+    from app.writing_skills import skill_def_from_orm
+
+    if not channel:
+        return None
+
+    # Reload with skill relationship
+    result = await db.execute(
+        select(Channel)
+        .options(selectinload(Channel.writing_skill))
+        .where(Channel.id == channel.id)
+    )
+    ch = result.scalar_one_or_none()
+    if not ch:
+        return None
+
+    # Channel has a selected skill
+    if ch.writing_skill_id and ch.writing_skill:
+        return skill_def_from_orm(ch.writing_skill)
+
+    # Channel has a custom writer_prompt (backward compat)
+    if ch.writer_prompt:
+        first_line = ch.writer_prompt.strip().split("\n")[0]
+        persona = "老成"
+        if "「" in first_line and "」" in first_line:
+            persona = first_line.split("「")[1].split("」")[0]
+        return WritingSkillDef(
+            id=0, name="", description="", persona=persona,
+            system_prompt=ch.writer_prompt,
+            sticker_prompt=ch.sticker_prompt or "",
+        )
+
+    # Default: load preset skill
+    result2 = await db.execute(
+        select(WritingSkill).where(WritingSkill.is_preset == True)
+        .order_by(WritingSkill.id).limit(1)
+    )
+    preset = result2.scalar_one_or_none()
+    if preset:
+        return skill_def_from_orm(preset)
+
+    return None
+
+
 def channel_redirect(path: str, channel_id: int | None = None) -> RedirectResponse:
     if channel_id:
         url = f"{path}?c={channel_id}"
@@ -77,6 +126,8 @@ def channel_redirect(path: str, channel_id: int | None = None) -> RedirectRespon
 
 @app.get("/")
 async def index(request: Request, db: AsyncSession = Depends(get_db), c: int | None = Query(None)):
+    import time as _time
+    _t0 = _time.time()
     channels = await get_channels(db)
     if not channels:
         return RedirectResponse(url="/channels", status_code=302)
@@ -140,6 +191,9 @@ async def index(request: Request, db: AsyncSession = Depends(get_db), c: int | N
         },
         "recent_articles": recent_articles,
     })
+    _elapsed = _time.time() - _t0
+    if _elapsed > 1:
+        print(f"[SLOW] / (dashboard for c={c}) took {_elapsed:.2f}s")
 
 
 # ─── Article management ──────────────────────────────────────────
@@ -467,7 +521,8 @@ async def wechat_rewrite_item(item_id: int, request: Request, db: AsyncSession =
         return channel_redirect("/wechat-rewrite", c)
 
     from app.comment_rewriter import CommentRewriter
-    rewriter = CommentRewriter(channel=current, generator=DeepSeekGenerator())
+    skill_def = await resolve_channel_skill(db, current)
+    rewriter = CommentRewriter(channel=current, generator=DeepSeekGenerator(), skill_def=skill_def)
     article_data = await rewriter.rewrite_item({
         "title": item.title,
         "url": item.url,
@@ -493,6 +548,7 @@ async def wechat_rewrite_item(item_id: int, request: Request, db: AsyncSession =
             cover_image=cover,
             status="draft",
             is_daily=False,
+            enhanced=article_data.get("enhanced", False),
         )
         db.add(article)
         await db.flush()
@@ -528,7 +584,8 @@ async def wechat_rewrite_batch(request: Request, db: AsyncSession = Depends(get_
     pending = result.scalars().all()
 
     from app.comment_rewriter import CommentRewriter
-    rewriter = CommentRewriter(channel=current, generator=DeepSeekGenerator())
+    skill_def = await resolve_channel_skill(db, current)
+    rewriter = CommentRewriter(channel=current, generator=DeepSeekGenerator(), skill_def=skill_def)
 
     success = 0
     for item in pending:
@@ -556,6 +613,7 @@ async def wechat_rewrite_batch(request: Request, db: AsyncSession = Depends(get_
                     cover_image=cover,
                     status="draft",
                     is_daily=False,
+                    enhanced=article_data.get("enhanced", False),
                 )
                 db.add(article)
                 await db.flush()
@@ -628,12 +686,33 @@ async def _save_channel_sources(session, channel_id: int, form):
             src = result.scalar_one_or_none()
             if src:
                 src.name = form.get(key, src.name)
-                config_raw = form.get(f"source_config_{src_id}", "{}")
-                try:
-                    json.loads(config_raw)
-                    src.config = config_raw
-                except Exception:
-                    pass
+                # If dedicated wechat_sogou fields exist, build config from them
+                if f"ws_keywords_{src_id}" in form:
+                    keywords = [kw.strip() for kw in form.get(f"ws_keywords_{src_id}", "").strip().split("\n") if kw.strip()]
+                    accounts = [a.strip() for a in form.get(f"ws_accounts_{src_id}", "").strip().split("\n") if a.strip()]
+                    max_items = int(form.get(f"ws_max_items_{src_id}", 20))
+                    proxy = form.get(f"ws_proxy_{src_id}", "").strip()
+                    cfg = {
+                        "keywords": keywords,
+                        "wechat_accounts": accounts,
+                        "max_items": max_items,
+                        "proxy": proxy,
+                    }
+                    # Preserve filter_keywords from existing config
+                    try:
+                        old_cfg = json.loads(src.config) if src.config else {}
+                        if old_cfg.get("filter_keywords"):
+                            cfg["filter_keywords"] = old_cfg["filter_keywords"]
+                    except Exception:
+                        pass
+                    src.config = json.dumps(cfg, ensure_ascii=False)
+                else:
+                    config_raw = form.get(f"source_config_{src_id}", "{}")
+                    try:
+                        json.loads(config_raw)
+                        src.config = config_raw
+                    except Exception:
+                        pass
 
     # 3. Add new source (if name is provided)
     source_type = form.get("source_type_new", "").strip()
@@ -690,6 +769,117 @@ async def _save_channel_sources(session, channel_id: int, form):
     session.add(src)
 
 
+# ─── Writing skill management ─────────────────────────────────────
+
+@app.get("/writing-skills")
+async def writing_skill_list(request: Request, db: AsyncSession = Depends(get_db)):
+    import time as _time
+    _t0 = _time.time()
+    channels = await get_channels(db)
+    result = await db.execute(select(WritingSkill).order_by(WritingSkill.id))
+    skills = result.scalars().all()
+    _elapsed = _time.time() - _t0
+    if _elapsed > 1:
+        print(f"[SLOW] /writing-skills took {_elapsed:.2f}s")
+    return templates.TemplateResponse(request, "writing_skills.html", {
+        "request": request,
+        "channels": channels,
+        "current_channel": None,
+        "skills": skills,
+    })
+
+
+@app.get("/writing-skills/add")
+async def writing_skill_add_form(request: Request, db: AsyncSession = Depends(get_db)):
+    channels = await get_channels(db)
+    from app.writing_skills import DEFAULT_STYLE_GUIDE, DEFAULT_QUALITY_CHECKLIST
+    from app.generator import SYSTEM_PROMPT_FULL, STICKER_SYSTEM_PROMPT
+    return templates.TemplateResponse(request, "writing_skill_form.html", {
+        "request": request,
+        "channels": channels,
+        "current_channel": None,
+        "skill": None,
+        "default_system_prompt": SYSTEM_PROMPT_FULL,
+        "default_sticker_prompt": STICKER_SYSTEM_PROMPT,
+        "default_style_guide": DEFAULT_STYLE_GUIDE,
+        "default_quality_checklist": DEFAULT_QUALITY_CHECKLIST,
+    })
+
+
+@app.post("/writing-skills/add")
+async def writing_skill_add(request: Request, db: AsyncSession = Depends(get_db)):
+    form = await request.form()
+    skill = WritingSkill(
+        is_preset=False,
+        name=form.get("name", ""),
+        description=form.get("description", ""),
+        persona=form.get("persona", "老成"),
+        system_prompt=form.get("system_prompt", ""),
+        sticker_prompt=form.get("sticker_prompt", ""),
+        style_guide=form.get("style_guide", ""),
+        quality_checklist=form.get("quality_checklist", ""),
+    )
+    db.add(skill)
+    await db.commit()
+    return RedirectResponse(url="/writing-skills", status_code=302)
+
+
+@app.get("/writing-skills/{skill_id}/edit")
+async def writing_skill_edit_form(skill_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    import time as _time
+    _t0 = _time.time()
+    channels = await get_channels(db)
+    result = await db.execute(select(WritingSkill).where(WritingSkill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if not skill:
+        return RedirectResponse(url="/writing-skills", status_code=302)
+    from app.writing_skills import DEFAULT_STYLE_GUIDE, DEFAULT_QUALITY_CHECKLIST
+    _elapsed = _time.time() - _t0
+    if _elapsed > 1:
+        print(f"[SLOW] /writing-skills/{skill_id}/edit took {_elapsed:.2f}s")
+    return templates.TemplateResponse(request, "writing_skill_form.html", {
+        "request": request,
+        "channels": channels,
+        "current_channel": None,
+        "skill": skill,
+        "default_style_guide": DEFAULT_STYLE_GUIDE,
+        "default_quality_checklist": DEFAULT_QUALITY_CHECKLIST,
+    })
+
+
+@app.post("/writing-skills/{skill_id}/edit")
+async def writing_skill_edit(skill_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(WritingSkill).where(WritingSkill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if not skill:
+        return RedirectResponse(url="/writing-skills", status_code=302)
+    form = await request.form()
+    skill.name = form.get("name", skill.name)
+    skill.description = form.get("description", skill.description)
+    skill.persona = form.get("persona", skill.persona)
+    skill.system_prompt = form.get("system_prompt", skill.system_prompt)
+    skill.sticker_prompt = form.get("sticker_prompt", skill.sticker_prompt)
+    skill.style_guide = form.get("style_guide", skill.style_guide)
+    skill.quality_checklist = form.get("quality_checklist", skill.quality_checklist)
+    await db.commit()
+    return RedirectResponse(url="/writing-skills", status_code=302)
+
+
+@app.post("/writing-skills/{skill_id}/delete")
+async def writing_skill_delete(skill_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(WritingSkill).where(WritingSkill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if skill and not skill.is_preset:
+        # Unlink any channels using this skill
+        await db.execute(
+            text("UPDATE channels SET writing_skill_id = NULL WHERE writing_skill_id = :sid"),
+            {"sid": skill_id},
+        )
+        await db.delete(skill)
+        await db.commit()
+    return RedirectResponse(url="/writing-skills", status_code=302)
+
+
 # ─── Channel management ─────────────────────────────────────────
 
 @app.get("/channels")
@@ -706,6 +896,8 @@ async def channel_list(request: Request, db: AsyncSession = Depends(get_db)):
 async def channel_add_form(request: Request, db: AsyncSession = Depends(get_db)):
     channels = await get_channels(db)
     source_types = list_source_types()
+    result = await db.execute(select(WritingSkill).order_by(WritingSkill.id))
+    all_skills = result.scalars().all()
     return templates.TemplateResponse(request, "channel_form.html", {
         "request": request,
         "channels": channels,
@@ -714,17 +906,20 @@ async def channel_add_form(request: Request, db: AsyncSession = Depends(get_db))
         "ch_sources": [],
         "source_types": source_types,
         "default_prompt": SYSTEM_PROMPT_FULL,
+        "all_skills": all_skills,
     })
 
 
 @app.post("/channels/add")
 async def channel_add(request: Request, db: AsyncSession = Depends(get_db)):
     form = await request.form()
+    sid_raw = form.get("writing_skill_id", "")
     ch = Channel(
         name=form.get("name", ""),
         description=form.get("description", ""),
         writer_prompt=form.get("writer_prompt", ""),
         sticker_prompt=form.get("sticker_prompt", ""),
+        writing_skill_id=int(sid_raw) if sid_raw and sid_raw != "0" else None,
         schedule_hour=int(form.get("schedule_hour", 9)),
         schedule_minute=int(form.get("schedule_minute", 0)),
         schedule_enabled=form.get("schedule_enabled", "on") == "on",
@@ -741,7 +936,12 @@ async def channel_add(request: Request, db: AsyncSession = Depends(get_db)):
 @app.get("/channels/{channel_id}/edit")
 async def channel_edit_form(channel_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     channels = await get_channels(db)
-    result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(Channel)
+        .options(selectinload(Channel.writing_skill))
+        .where(Channel.id == channel_id)
+    )
     ch = result.scalar_one_or_none()
     if not ch:
         return RedirectResponse(url="/channels", status_code=302)
@@ -751,6 +951,8 @@ async def channel_edit_form(channel_id: int, request: Request, db: AsyncSession 
     )
     ch_sources = src_result.scalars().all()
     source_types = list_source_types()
+    result2 = await db.execute(select(WritingSkill).order_by(WritingSkill.id))
+    all_skills = result2.scalars().all()
     return templates.TemplateResponse(request, "channel_form.html", {
         "request": request,
         "channels": channels,
@@ -759,6 +961,7 @@ async def channel_edit_form(channel_id: int, request: Request, db: AsyncSession 
         "ch_sources": ch_sources,
         "source_types": source_types,
         "default_prompt": SYSTEM_PROMPT_FULL,
+        "all_skills": all_skills,
     })
 
 
@@ -773,6 +976,8 @@ async def channel_edit(channel_id: int, request: Request, db: AsyncSession = Dep
     ch.description = form.get("description", ch.description)
     ch.writer_prompt = form.get("writer_prompt", ch.writer_prompt)
     ch.sticker_prompt = form.get("sticker_prompt", ch.sticker_prompt)
+    sid_raw = form.get("writing_skill_id", "")
+    ch.writing_skill_id = int(sid_raw) if sid_raw and sid_raw != "0" else None
     ch.schedule_hour = int(form.get("schedule_hour", ch.schedule_hour))
     ch.schedule_minute = int(form.get("schedule_minute", ch.schedule_minute))
     ch.schedule_enabled = form.get("schedule_enabled", "on") == "on"
@@ -881,8 +1086,9 @@ async def trigger_generate(db: AsyncSession = Depends(get_db), c: int | None = Q
         "date": "",
     }
 
+    skill_def = await resolve_channel_skill(db, current)
     generator = DeepSeekGenerator()
-    article_data = await generator.generate_article(news_data)
+    article_data = await generator.generate_article(news_data, skill=skill_def)
 
     if article_data:
         title = article_data.get("title", "AI 资讯")
@@ -913,10 +1119,16 @@ async def trigger_generate(db: AsyncSession = Depends(get_db), c: int | None = Q
 async def scheduler_status_json(db: AsyncSession = Depends(get_db)):
     from app.scheduler import scheduler_status as ss
     data = ss()
-    channels = await db.execute(
-        select(Channel).where(Channel.is_active == True, Channel.schedule_enabled == True)
-    )
-    data["channels"] = {str(ch.id): ch.name for ch in channels.scalars().all()}
+    # Build running_channels dict {id: name} for currently running jobs
+    running_ids = data.get("running", [])
+    if running_ids:
+        ch_result = await db.execute(
+            select(Channel).where(Channel.id.in_(running_ids))
+        )
+        running_map = {str(ch.id): ch.name for ch in ch_result.scalars().all()}
+    else:
+        running_map = {}
+    data["running_channels"] = running_map
     return JSONResponse(data)
 
 
@@ -936,35 +1148,7 @@ async def scheduler_status_route():
 
 # ─── Scheduler SSE events ──────────────────────────────────────
 
-@app.get("/scheduler-events")
-async def scheduler_events(request: Request):
-    from app.scheduler import subscribe, unsubscribe
-    import asyncio
 
-    queue = subscribe()
-
-    async def event_generator():
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=30)
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-        finally:
-            unsubscribe(queue)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 # ─── Logs ────────────────────────────────────────────────────────

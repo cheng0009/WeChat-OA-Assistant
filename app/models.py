@@ -4,6 +4,22 @@ from sqlalchemy.orm import relationship
 from app.database import Base
 
 
+class WritingSkill(Base):
+    __tablename__ = "writing_skills"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    is_preset = Column(Boolean, default=False)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, default="")
+    persona = Column(String(50), default="老成")
+    system_prompt = Column(Text, default="")
+    sticker_prompt = Column(Text, default="")
+    style_guide = Column(Text, default="")
+    quality_checklist = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
 class Channel(Base):
     __tablename__ = "channels"
 
@@ -12,6 +28,7 @@ class Channel(Base):
     description = Column(Text, default="")
     writer_prompt = Column(Text, default="")
     sticker_prompt = Column(Text, default="")
+    writing_skill_id = Column(Integer, ForeignKey("writing_skills.id"), nullable=True)
     schedule_hour = Column(Integer, default=9)
     schedule_minute = Column(Integer, default=0)
     schedule_enabled = Column(Boolean, default=True)
@@ -25,6 +42,7 @@ class Channel(Base):
     articles = relationship("Article", back_populates="channel", cascade="all, delete-orphan")
     news_items = relationship("NewsItem", back_populates="channel", cascade="all, delete-orphan")
     daily_logs = relationship("DailyLog", back_populates="channel", cascade="all, delete-orphan")
+    writing_skill = relationship("WritingSkill", foreign_keys=[writing_skill_id])
 
 
 class Article(Base):
@@ -49,6 +67,7 @@ class Article(Base):
     wechat_sticker_url = Column(String(500), default="")
     wechat_sticker_published = Column(Boolean, default=False)
     auto_publish_note = Column(String(200), default="")
+    enhanced = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

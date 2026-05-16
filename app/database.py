@@ -68,7 +68,7 @@ def _fix_boolean_column_types():
 
 
 async def init_db():
-    from app.models import Article, NewsItem, DailyLog, Source, Channel
+    from app.models import Article, NewsItem, DailyLog, Source, Channel, WritingSkill
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -115,6 +115,59 @@ async def init_db():
     # Channel avatar / qrcode
     for col in ["avatar_image", "qrcode_image"]:
         await _add_col("channels", f"{col} TEXT DEFAULT ''")
+
+    # writing_skill_id on channels
+    await _add_col("channels", "writing_skill_id INTEGER DEFAULT NULL")
+
+    # WritingSkill columns (may already exist from create_all)
+    await _add_col("writing_skills", "style_guide TEXT DEFAULT ''")
+    await _add_col("writing_skills", "quality_checklist TEXT DEFAULT ''")
+
+    # Article.enhanced
+    await _add_col("articles", "enhanced INTEGER DEFAULT 0")
+
+    # Seed / update preset skills
+    await _seed_preset_skills()
+
+
+async def _seed_preset_skills():
+    """Insert or update built-in writing skills."""
+    from app.models import WritingSkill
+    from app.writing_skills import PRESET_SKILL_DEFS, LAOCHENG_STYLE_GUIDE, LAOCHENG_QUALITY_CHECKLIST
+
+    async with async_session() as session:
+        preset_name = PRESET_SKILL_DEFS[0].name if PRESET_SKILL_DEFS else "老成写作"
+        result = await session.execute(
+            select(WritingSkill).where(WritingSkill.name == preset_name).limit(1)
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            # Update existing preset with new fields if missing
+            if not existing.style_guide:
+                existing.style_guide = LAOCHENG_STYLE_GUIDE
+            if not existing.quality_checklist:
+                existing.quality_checklist = LAOCHENG_QUALITY_CHECKLIST
+            updated = any([not existing.style_guide, not existing.quality_checklist])
+            if updated:
+                await session.commit()
+                print(f"[DB] Updated preset skill '{preset_name}' with style guide & checklist")
+            return
+
+        for defn in PRESET_SKILL_DEFS:
+            skill = WritingSkill(
+                is_preset=True,
+                name=defn.name,
+                description=defn.description,
+                persona=defn.persona,
+                system_prompt=defn.system_prompt,
+                sticker_prompt=defn.sticker_prompt,
+                style_guide=defn.style_guide,
+                quality_checklist=defn.quality_checklist,
+            )
+            session.add(skill)
+        await session.commit()
+        print(f"[DB] Seeded {len(PRESET_SKILL_DEFS)} preset writing skill(s)")
 
 
 async def get_db():
