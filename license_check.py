@@ -399,13 +399,65 @@ def verify_license(license_path: str = None) -> tuple:
 
 def check_license_with_exit(license_path: str = None) -> bool:
     """验证授权，失败则退出"""
-    is_valid, message = verify_license(license_path)
-    if not is_valid:
-        print(f"授权验证失败: {message}")
-        print("请获取有效授权后重新运行程序")
-        input("\n按回车键退出...")
+    try:
+        is_valid, message = verify_license(license_path)
+        if not is_valid:
+            print(f"授权验证失败: {message}")
+            print("请获取有效授权后重新运行程序")
+            input("\n按回车键退出...")
+            sys.exit(1)
+    except LicenseCheckError as e:
+        _show_license_prompt(e)
         sys.exit(1)
     return True
+
+
+def _show_license_prompt(error: LicenseCheckError):
+    """显示授权缺失提示（控制台 + 弹窗），内含机器码供用户复制"""
+    machine_code = MachineFingerprint.get_fingerprint()
+    simple_code = MachineFingerprint.get_simple_fingerprint()
+
+    print()
+    print("=" * 56)
+    print("   授权文件未找到 — 请获取授权后重试")
+    print("=" * 56)
+    print(f"\n错误: {error}")
+    print(f"\n■ 机器指纹（完整码）:")
+    print(f"  {machine_code}")
+    print(f"\n■ 简化机器码:")
+    print(f"  {simple_code}")
+    print()
+    print("请将以上机器码发送给开发者，")
+    print("将收到的 license.dat 放到本程序同目录后重新运行。")
+    print()
+
+    # 同时将机器码写入同目录文件，方便用户复制
+    try:
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.getcwd()
+        info_path = os.path.join(exe_dir, "machine_code.txt")
+        with open(info_path, "w", encoding="utf-8") as f:
+            f.write(f"机器指纹: {machine_code}\n")
+            f.write(f"简化机器码: {simple_code}\n")
+        print(f"机器码已保存到同目录: {info_path}")
+    except Exception:
+        pass
+
+    # Windows 弹窗提示
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            f"授权文件 (license.dat) 未找到。\n\n"
+            f"机器指纹:\n{machine_code}\n\n"
+            f"简化码: {simple_code}\n\n"
+            f"请将此机器码发给开发者获取授权。\n"
+            f"（机器码已保存到同目录 machine_code.txt）",
+            "授权验证",
+            0,
+        )
+    except Exception:
+        pass
+
+    input("\n按回车键退出...")
 
 
 def secure_start(license_path: str = None, enable_anti_debug: bool = True):
