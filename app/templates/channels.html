@@ -4,6 +4,15 @@
 <h2>频道管理</h2>
 <p class="text-muted">每个频道独立管理数据源、文章、微信账号和定时任务。</p>
 
+{% set msg = request.query_params.get('msg', '') %}
+{% set msg_type = request.query_params.get('type', 'info') %}
+{% if msg %}
+<div class="alert alert-{{ 'danger' if msg_type == 'warning' else 'info' }} alert-dismissible fade show" role="alert">
+    {{ msg }}
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+
 <div class="d-flex justify-content-end mb-3">
     <a href="/channels/add" class="btn btn-accent">+ 新建频道</a>
 </div>

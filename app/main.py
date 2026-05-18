@@ -1,4 +1,4 @@
-import os, json
+import os, json, urllib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Depends, Query
@@ -650,43 +650,23 @@ async def _save_channel_uploads(channel: Channel, form):
 async def _save_channel_sources(session, channel_id: int, form):
     """Save all sources for a channel from form data.
 
-    Form field convention:
-      - Existing sources:    source_name_{id}, source_config_{id}, source_del_{id}
-      - New source (optional): source_type_new, source_name_new, ws_keywords_new, etc.
+    Returns a tuple (success: bool, message: str).
     """
     from app.models import Source as Src
 
-    # 1. Handle deletions (checkbox value = "1")
-    for key in form.keys():
-        if key.startswith("source_del_") and form.get(key) == "1":
-            parts = key.split("_")
-            if parts[-1] == "new":
-                continue
-            src_id = int(parts[-1])
-            result = await session.execute(
-                select(Src).where(Src.id == src_id, Src.channel_id == channel_id)
-            )
-            src = result.scalar_one_or_none()
-            if src:
-                await session.delete(src)
-
-    # 2. Update existing sources
+    # Update existing sources
     for key in list(form.keys()):
         if key.startswith("source_name_"):
             parts = key.split("_")
             if parts[-1] == "new":
                 continue
             src_id = int(parts[-1])
-            # Skip if marked for deletion
-            if form.get(f"source_del_{src_id}") == "1":
-                continue
             result = await session.execute(
                 select(Src).where(Src.id == src_id, Src.channel_id == channel_id)
             )
             src = result.scalar_one_or_none()
             if src:
                 src.name = form.get(key, src.name)
-                # If dedicated wechat_sogou fields exist, build config from them
                 if f"ws_keywords_{src_id}" in form:
                     keywords = [kw.strip() for kw in form.get(f"ws_keywords_{src_id}", "").strip().split("\n") if kw.strip()]
                     accounts = [a.strip() for a in form.get(f"ws_accounts_{src_id}", "").strip().split("\n") if a.strip()]
@@ -698,7 +678,6 @@ async def _save_channel_sources(session, channel_id: int, form):
                         "max_items": max_items,
                         "proxy": proxy,
                     }
-                    # Preserve filter_keywords from existing config
                     try:
                         old_cfg = json.loads(src.config) if src.config else {}
                         if old_cfg.get("filter_keywords"):
@@ -714,16 +693,16 @@ async def _save_channel_sources(session, channel_id: int, form):
                     except Exception:
                         pass
 
-    # 3. Add new source (if name is provided)
+    # 3. Add new source
     source_type = form.get("source_type_new", "").strip()
     source_name = form.get("source_name_new", "").strip()
-    if not source_type or not source_name:
-        return
+    if not source_type:
+        return False, "来源类型不能为空"
+    if not source_name:
+        return False, "来源名称不能为空，请填写「来源名称」字段"
 
-    # Parse common filter keywords
     filter_keywords = [kw.strip() for kw in form.get("filter_keywords_new", "").strip().split("\n") if kw.strip()]
 
-    # Build config JSON based on type
     if source_type == "wechat_sogou":
         keywords = [kw.strip() for kw in form.get("ws_keywords_new", "").strip().split("\n") if kw.strip()]
         accounts = [a.strip() for a in form.get("ws_accounts_new", "").strip().split("\n") if a.strip()]
@@ -767,6 +746,7 @@ async def _save_channel_sources(session, channel_id: int, form):
         enabled=True,
     )
     session.add(src)
+    return True, "数据源保存成功"
 
 
 # ─── Writing skill management ─────────────────────────────────────
@@ -928,9 +908,12 @@ async def channel_add(request: Request, db: AsyncSession = Depends(get_db)):
     db.add(ch)
     await db.flush()
     await _save_channel_uploads(ch, form)
-    await _save_channel_sources(db, ch.id, form)
+    ok, msg = await _save_channel_sources(db, ch.id, form)
     await db.commit()
-    return RedirectResponse(url="/channels", status_code=302)
+    url = "/channels"
+    if not ok:
+        url += f"?msg={urllib.parse.quote(msg)}&type=warning"
+    return RedirectResponse(url=url, status_code=302)
 
 
 @app.get("/channels/{channel_id}/edit")
@@ -982,9 +965,12 @@ async def channel_edit(channel_id: int, request: Request, db: AsyncSession = Dep
     ch.schedule_minute = int(form.get("schedule_minute", ch.schedule_minute))
     ch.schedule_enabled = form.get("schedule_enabled", "on") == "on"
     await _save_channel_uploads(ch, form)
-    await _save_channel_sources(db, ch.id, form)
+    ok, msg = await _save_channel_sources(db, ch.id, form)
     await db.commit()
-    return RedirectResponse(url="/channels", status_code=302)
+    url = "/channels"
+    if not ok:
+        url += f"?msg={urllib.parse.quote(msg)}&type=warning"
+    return RedirectResponse(url=url, status_code=302)
 
 
 @app.post("/channels/{channel_id}/delete")
@@ -1111,6 +1097,39 @@ async def trigger_generate(db: AsyncSession = Depends(get_db), c: int | None = Q
         await db.commit()
 
     return channel_redirect("/", c)
+
+
+# ─── Test source ─────────────────────────────────────────────────
+
+@app.post("/sources/{source_id}/test")
+async def test_source_endpoint(source_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    """Test a specific source by fetching data."""
+    from app.fetcher import test_source as fetcher_test_source
+    if request.headers.get("x-requested-with") == "XMLHttpRequest":
+        try:
+            result = await fetcher_test_source(source_id)
+            return JSONResponse({"ok": True, "result": result})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)})
+    return HTMLResponse("<script>alert('请使用 AJAX');window.history.back();</script>")
+
+
+@app.post("/sources/{source_id}/delete")
+async def delete_source_endpoint(source_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    """Delete a specific source via AJAX."""
+    from app.models import Source as Src
+    if request.headers.get("x-requested-with") == "XMLHttpRequest":
+        try:
+            result = await db.execute(select(Src).where(Src.id == source_id))
+            src = result.scalar_one_or_none()
+            if not src:
+                return JSONResponse({"ok": False, "error": "数据源不存在"})
+            await db.delete(src)
+            await db.commit()
+            return JSONResponse({"ok": True, "message": "删除成功"})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)})
+    return HTMLResponse("<script>alert('请使用 AJAX');window.history.back();</script>")
 
 
 # ─── Scheduler status ───────────────────────────────────────────
