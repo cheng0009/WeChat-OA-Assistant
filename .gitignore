@@ -33,3 +33,10 @@ data/wechat_state*.json
 data/test_upload/
 data/channel_uploads/
 data/app.db
+
+# Junk test files & old archives
+_test_*.py
+machine_code.txt
+dist2.rar
+dist2/
+WeChatOA-v*.zip

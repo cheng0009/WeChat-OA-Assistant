@@ -6,7 +6,13 @@ import httpx
 from .base import BaseSource, normalize_item
 
 SOGOU_SEARCH_URL = "https://weixin.sogou.com/weixin"
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+EXTRA_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Referer": "https://weixin.sogou.com/",
+    "Connection": "keep-alive",
+}
 
 
 class WechatSogouSource(BaseSource):
@@ -15,7 +21,7 @@ class WechatSogouSource(BaseSource):
 
     def __init__(self, api_url="", api_key="", config=None):
         super().__init__(api_url, api_key, config)
-        self._http = httpx.AsyncClient(timeout=30, follow_redirects=True, headers={"User-Agent": UA})
+        self._http = httpx.AsyncClient(timeout=30, follow_redirects=True, headers={"User-Agent": UA, **EXTRA_HEADERS})
         self.keywords = self.config.get("keywords", [])
         self.wechat_accounts = self.config.get("wechat_accounts", [])
         self.max_items = int(self.config.get("max_items", 20))
@@ -27,6 +33,10 @@ class WechatSogouSource(BaseSource):
         resp = await self._http.get(SOGOU_SEARCH_URL, params=params)
         resp.raise_for_status()
         html = resp.text
+        # Captcha / anti-spider detection
+        if "antispider" in str(resp.url) or len(html) < 8000:
+            print(f"[WechatSogou] ⚠️ 搜狗返回反爬页面（{resp.url}），关键词 '{kw}' 抓取跳过")
+            return []
         items = []
 
         # Find each result block: <li> inside <ul class="news-list">
@@ -77,34 +87,69 @@ class WechatSogouSource(BaseSource):
     async def fetch(self) -> list[dict]:
         results = []
         seen_urls = set()
-
-        # ── Keywords with fair quota distribution ──────────────
+        max_items = self.max_items
         keywords = list(self.keywords)
-        random.shuffle(keywords)  # different order each run for diversity
+        accounts = list(self.wechat_accounts)
+        random.shuffle(keywords)
+        random.shuffle(accounts)
 
-        num_kw = len(keywords)
-        if num_kw > 0:
-            per_keyword = max(1, self.max_items // num_kw)
-            extra = self.max_items - per_keyword * num_kw
+        # ── Pass 1: 指定公众号 + 关键词匹配 ──────────────────
+        if keywords and accounts:
+            for acc in accounts:
+                if len(results) >= max_items:
+                    break
+                try:
+                    articles = await self._fetch_by_account(acc)
+                    for art in articles:
+                        if len(results) >= max_items:
+                            break
+                        title = (art.get("title") or "")
+                        if not any(kw.lower() in title.lower() for kw in keywords):
+                            continue
+                        item_url, full_content = await self._fetch_article_content(art.get("url", ""))
+                        if not item_url:
+                            item_url = art.get("url", "")
+                        if not item_url or item_url in seen_urls:
+                            continue
+                        seen_urls.add(item_url)
+                        results.append(normalize_item({
+                            "title": title,
+                            "url": item_url,
+                            "source": acc,
+                            "summary": art.get("summary", ""),
+                            "content": full_content,
+                            "category": "wechat",
+                            "publishedAt": art.get("publishedAt", ""),
+                        }, default_source=acc))
+                except Exception as e:
+                    print(f"[WechatSogou] Account '{acc}' fetch error: {e}")
 
+            if not results:
+                print(f"[WechatSogou] 指定公众号未匹配到含关键词的文章，降级为全局关键词搜索")
+
+        # ── Pass 2: 纯关键词搜索（降级 / 仅配关键词） ─────────
+        if keywords and (not accounts or not results):
+            per_keyword = max(1, max_items // len(keywords))
+            extra = max_items - per_keyword * len(keywords)
             for i, kw in enumerate(keywords):
-                if len(results) >= self.max_items:
+                if len(results) >= max_items:
                     break
                 budget = per_keyword + (1 if i < extra else 0)
                 try:
                     articles = await self._search_by_keyword(kw)
                     kw_count = 0
                     for art in articles:
-                        if len(results) >= self.max_items or kw_count >= budget:
+                        if len(results) >= max_items or kw_count >= budget:
                             break
-                        url = art.get("url", "")
-                        if url in seen_urls:
+                        item_url, full_content = await self._fetch_article_content(art.get("url", ""))
+                        if not item_url:
+                            item_url = art.get("url", "")
+                        if not item_url or item_url in seen_urls:
                             continue
-                        seen_urls.add(url)
-                        full_content = await self._fetch_article_content(url)
+                        seen_urls.add(item_url)
                         results.append(normalize_item({
                             "title": art.get("title", ""),
-                            "url": url,
+                            "url": item_url,
                             "source": art.get("account", ""),
                             "summary": art.get("summary", ""),
                             "content": full_content,
@@ -115,33 +160,38 @@ class WechatSogouSource(BaseSource):
                 except Exception as e:
                     print(f"[WechatSogou] Keyword '{kw}' search error: {e}")
 
-        # ── Specific accounts (wechatsogou library) ────────────
-        for acc in self.wechat_accounts:
-            if len(results) >= self.max_items:
-                break
-            try:
-                articles = await self._fetch_by_account(acc)
-                for art in articles:
-                    if len(results) >= self.max_items:
-                        break
-                    url = art.get("url", "")
-                    if url in seen_urls:
-                        continue
-                    seen_urls.add(url)
-                    full_content = await self._fetch_article_content(url)
-                    results.append(normalize_item({
-                        "title": art.get("title", ""),
-                        "url": url,
-                        "source": acc,
-                        "summary": art.get("summary", ""),
-                        "content": full_content,
-                        "category": "wechat",
-                        "publishedAt": art.get("publishedAt", ""),
-                    }, default_source=acc))
-            except Exception as e:
-                print(f"[WechatSogou] Account '{acc}' fetch error: {e}")
+        # ── Pass 3: 只有公众号 ─────────────────────────────
+        if accounts and not keywords:
+            for acc in accounts:
+                if len(results) >= max_items:
+                    break
+                try:
+                    articles = await self._fetch_by_account(acc)
+                    for art in articles:
+                        if len(results) >= max_items:
+                            break
+                        item_url, full_content = await self._fetch_article_content(art.get("url", ""))
+                        if not item_url:
+                            item_url = art.get("url", "")
+                        if not item_url or item_url in seen_urls:
+                            continue
+                        seen_urls.add(item_url)
+                        results.append(normalize_item({
+                            "title": art.get("title", ""),
+                            "url": item_url,
+                            "source": acc,
+                            "summary": art.get("summary", ""),
+                            "content": full_content,
+                            "category": "wechat",
+                            "publishedAt": art.get("publishedAt", ""),
+                        }, default_source=acc))
+                except Exception as e:
+                    print(f"[WechatSogou] Account '{acc}' fetch error: {e}")
 
-        return self._apply_keywords(results[: self.max_items])
+        final = results[:max_items]
+        if len(final) < 3:
+            print(f"[WechatSogou] ⚠️ 仅抓取到 {len(final)} 篇，建议在频道中添加更多关键词或公众号")
+        return self._apply_keywords(final)
 
     async def _fetch_by_account(self, acc: str) -> list[dict]:
         """Fetch articles by account name via wechatsogou library."""
@@ -172,35 +222,45 @@ class WechatSogouSource(BaseSource):
             print("[WechatSogou] wechatsogou library not installed, skipping account search")
             return []
 
-    async def _fetch_article_content(self, url: str) -> str:
-        """Fetch and extract full article content from WeChat URL."""
+    async def _fetch_article_content(self, url: str) -> tuple[str, str]:
+        """Fetch article, follow redirects, return (resolved_url, content_text).
+
+        The resolved URL is the real mp.weixin.qq.com URL (stable for dedup),
+        not the temporary Sogou redirect URL.
+        """
         if not url:
-            return ""
+            return ("", "")
         try:
             resp = await self._http.get(url, timeout=15)
             resp.raise_for_status()
+            resolved = str(resp.url)
             html = resp.text
-            # Try rich_media_content first
+            # Captcha check on article fetch
+            if "antispider" in resolved or len(html) < 2000:
+                return ("", "")
             m = re.search(r'id="rich_media_content"[^>]*>(.*?)</div>\s*<script', html, re.DOTALL)
             if m:
                 text = re.sub(r'<[^>]+>', '', m.group(1))
                 text = re.sub(r'\s+', ' ', text).strip()
-                return text[:3000]
-            # Fallback: js_content
+                return (resolved, text[:3000])
             m = re.search(r'id="js_content"[^>]*>(.*?)</div>\s*<script', html, re.DOTALL)
             if m:
                 text = re.sub(r'<[^>]+>', '', m.group(1))
                 text = re.sub(r'\s+', ' ', text).strip()
-                return text[:3000]
-            return ""
+                return (resolved, text[:3000])
+            return (resolved, "")
         except Exception:
-            return ""
+            return ("", "")
 
     async def test(self) -> str:
         kw = self.keywords[0] if self.keywords else "AI"
         try:
             articles = await self._search_by_keyword(kw)
             return f"OK, found {len(articles)} articles for keyword '{kw}'"
+        except httpx.HTTPStatusError as e:
+            return f"搜狗返回 {e.response.status_code}，可能被反爬限制"
+        except httpx.RequestError as e:
+            return f"网络请求失败: {e}"
         except Exception as e:
             return f"搜索失败: {type(e).__name__}: {e}"
 

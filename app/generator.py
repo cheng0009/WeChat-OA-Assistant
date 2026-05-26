@@ -96,6 +96,9 @@ class DeepSeekGenerator:
 - 全文 1800-2000 字
 - 口语化，像{persona}在跟读者聊天
 - 每条新闻要适当引用原文摘录"""
+        recent = news_data.get("recent_topics")
+        if recent:
+            user_prompt += "\n\n近期已写过以下主题，请避免重复：\n" + "\n".join(f"- {t}" for t in recent)
 
         raw = await self._call_api(system_prompt, user_prompt, max_tokens=8192)
         if not raw:

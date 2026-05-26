@@ -113,6 +113,38 @@ async def daily_job_for_channel(channel_id: int, channel_name: str = ""):
             folder_date = datetime.datetime.now().strftime("%Y-%m-%d")
             news_data = {"items": all_items, "daily": None, "date": date_str}
 
+            # Filter out items whose URL already used in a previous article
+            if all_items:
+                cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
+                existing_rows = await session.execute(
+                    select(NewsItem.url).where(
+                        NewsItem.channel_id == channel_id,
+                        NewsItem.url != "",
+                        NewsItem.created_at >= cutoff,
+                    )
+                )
+                existing_urls = {row[0] for row in existing_rows.fetchall() if row[0]}
+
+                before = len(all_items)
+                all_items = [it for it in all_items if it.get("url", "") not in existing_urls]
+                skipped = before - len(all_items)
+                if skipped:
+                    print(f"[Scheduler] Skipped {skipped} items already used in previous articles")
+                news_data["items"] = all_items
+
+            if len(all_items) < 3:
+                print(f"[Scheduler] ⚠️ 频道 {channel_id} 仅 {len(all_items)} 篇可用素材，建议添加更多数据源")
+                daily_log = DailyLog(
+                    channel_id=channel_id,
+                    date=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    fetch_count=len(all_items),
+                    status="warning",
+                    message=f"素材太少（{len(all_items)}篇），无法生成文章。请在频道中添加更多关键词、公众号或其他数据源。",
+                )
+                session.add(daily_log)
+                await session.commit()
+                return
+
             # Resolve writing skill
             skill_def = None
             if channel.writing_skill_id and channel.writing_skill:

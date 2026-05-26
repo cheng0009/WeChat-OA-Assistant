@@ -693,59 +693,58 @@ async def _save_channel_sources(session, channel_id: int, form):
                     except Exception:
                         pass
 
-    # 3. Add new source
-    source_type = form.get("source_type_new", "").strip()
+    # 3. Add new source (only if name is provided)
     source_name = form.get("source_name_new", "").strip()
-    if not source_type:
-        return False, "来源类型不能为空"
-    if not source_name:
-        return False, "来源名称不能为空，请填写「来源名称」字段"
+    if source_name:
+        source_type = form.get("source_type_new", "").strip()
+        if not source_type:
+            return False, "来源类型不能为空"
 
-    filter_keywords = [kw.strip() for kw in form.get("filter_keywords_new", "").strip().split("\n") if kw.strip()]
+        filter_keywords = [kw.strip() for kw in form.get("filter_keywords_new", "").strip().split("\n") if kw.strip()]
 
-    if source_type == "wechat_sogou":
-        keywords = [kw.strip() for kw in form.get("ws_keywords_new", "").strip().split("\n") if kw.strip()]
-        accounts = [a.strip() for a in form.get("ws_accounts_new", "").strip().split("\n") if a.strip()]
-        cfg = {
-            "keywords": keywords,
-            "wechat_accounts": accounts,
-            "max_items": int(form.get("ws_max_items_new", 20)),
-            "proxy": form.get("ws_proxy_new", ""),
-        }
-        if filter_keywords:
-            cfg["filter_keywords"] = filter_keywords
-        config = json.dumps(cfg, ensure_ascii=False)
-    elif source_type == "html_scraper":
-        cfg = {
-            "url": form.get("hs_url_new", ""),
-            "mode": form.get("hs_mode_new", "auto"),
-            "list_xpath": form.get("hs_list_xpath_new", ""),
-            "title_xpath": form.get("hs_title_xpath_new", ""),
-            "content_xpath": form.get("hs_content_xpath_new", ""),
-            "max_items": int(form.get("hs_max_items_new", 10)),
-        }
-        if filter_keywords:
-            cfg["filter_keywords"] = filter_keywords
-        config = json.dumps(cfg, ensure_ascii=False)
-    else:
-        try:
-            cfg = json.loads(form.get("source_config_new", "{}"))
-        except Exception:
-            cfg = {}
-        if filter_keywords:
-            cfg["filter_keywords"] = filter_keywords
-        config = json.dumps(cfg, ensure_ascii=False)
+        if source_type == "wechat_sogou":
+            keywords = [kw.strip() for kw in form.get("ws_keywords_new", "").strip().split("\n") if kw.strip()]
+            accounts = [a.strip() for a in form.get("ws_accounts_new", "").strip().split("\n") if a.strip()]
+            cfg = {
+                "keywords": keywords,
+                "wechat_accounts": accounts,
+                "max_items": int(form.get("ws_max_items_new", 20)),
+                "proxy": form.get("ws_proxy_new", ""),
+            }
+            if filter_keywords:
+                cfg["filter_keywords"] = filter_keywords
+            config = json.dumps(cfg, ensure_ascii=False)
+        elif source_type == "html_scraper":
+            cfg = {
+                "url": form.get("hs_url_new", ""),
+                "mode": form.get("hs_mode_new", "auto"),
+                "list_xpath": form.get("hs_list_xpath_new", ""),
+                "title_xpath": form.get("hs_title_xpath_new", ""),
+                "content_xpath": form.get("hs_content_xpath_new", ""),
+                "max_items": int(form.get("hs_max_items_new", 10)),
+            }
+            if filter_keywords:
+                cfg["filter_keywords"] = filter_keywords
+            config = json.dumps(cfg, ensure_ascii=False)
+        else:
+            try:
+                cfg = json.loads(form.get("source_config_new", "{}"))
+            except Exception:
+                cfg = {}
+            if filter_keywords:
+                cfg["filter_keywords"] = filter_keywords
+            config = json.dumps(cfg, ensure_ascii=False)
 
-    src = Src(
-        channel_id=channel_id,
-        name=source_name,
-        source_type=source_type,
-        api_url=form.get("source_api_url_new", ""),
-        api_key=form.get("source_api_key_new", ""),
-        config=config,
-        enabled=True,
-    )
-    session.add(src)
+        src = Src(
+            channel_id=channel_id,
+            name=source_name,
+            source_type=source_type,
+            api_url=form.get("source_api_url_new", ""),
+            api_key=form.get("source_api_key_new", ""),
+            config=config,
+            enabled=True,
+        )
+        session.add(src)
     return True, "数据源保存成功"
 
 
