@@ -337,6 +337,11 @@ def _render_wechat_images(viral_title, body, date_str, style_name, avatar_path, 
     set_channel_images(avatar_path, qrcode_path)
     style = STYLES.get(style_name) or STYLES[DEFAULT_STYLE]
 
+    # Safety: ensure viral_title isn't truncated mid-sentence
+    viral_title = viral_title.rstrip("，、；：,")
+    if len(viral_title) < 5:
+        viral_title = "AI 资讯"
+
     folder = _safe_folder(date_str, viral_title)
     out_dir = os.path.join(str(WECHAT_IMAGES_DIR), folder)
     os.makedirs(out_dir, exist_ok=True)
